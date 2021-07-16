@@ -1,247 +1,177 @@
-
-trigger:
-  none
-  
 name: Azure Pipelines
 variables:
   python.version: '3.7.6'
-  terraform.version: '0.14.3'
+
+###################### Start Provisioning ############################
+
 stages:
-- stage: Provisioning
-  displayName: Provisioning
-  jobs: 
-  - job: ProvisioningAppService
-    displayName: Provisioning AppService
+- stage: Provision
+  jobs:
+  - job: provision_azure_infrastructure
+    displayName: Provision Azure Infrastructure
+    pool:
+      vmImage: 'ubuntu-18.04'
     steps:
+    - task: DownloadSecureFile@1
+      name: tfvardef
+      displayName: Download terraform.tfvars
+      inputs:
+        secureFile: 'terraform.tfvars'
+
     - task: InstallSSHKey@0
+      displayName: 'Install an SSH key'
       inputs:
-        knownHostsEntry: 'default'
-        sshKeySecureFile: 'id_rsa'
-    - task: Bash@3
-      inputs:
-        targetType: 'inline'
-        script: |
-          ls /home/vsts/work/_temp/
+        knownHostsEntry: 'known_hosts'
+        sshPublicKey: $(PUBLIC_KEY)
+        sshKeySecureFile: id_rsa
+    
+    - bash: |
+        cp $(Agent.TempDirectory)/terraform.tfvars $(System.DefaultWorkingDirectory)/terraform/environments/test
+      displayName: Copy terraform.tfvars 
+      
+    - bash: |
+        echo Pipeline workspace dir is $(Pipeline.Workspace)
+        echo Terraform variable definition file is $(tfvardef.secureFilePath)
+        cd $(Agent.TempDirectory)
+        pwd
+        ls -la
+        cat udacity_azure.pub
+        cd ~/.ssh/
+        pwd
+        ls -la
+        cat known_hosts
+        # $(System.DefaultWorkingDirectory) is equivalent to $(Build.SourcesDirectory)
+        cd $(System.DefaultWorkingDirectory)  
+        pwd
+        ls -la
+      displayName: Verify build environment (pre)  
+      
+    # install Terraform Azure Pipelines Extension by Microsoft DevLabs
+    # https://marketplace.visualstudio.com/items?itemName=ms-devlabs.custom-terraform-tasks
+    
     - task: TerraformInstaller@0
       displayName: Install Terraform
       inputs:
-        terraformVersion: '0.14.3'
+        terraformVersion: '0.13.5'
+
     - task: TerraformTaskV1@0
       displayName: Terraform Init
       inputs:
         provider: 'azurerm'
         command: 'init'
-        backendServiceArm: 'EnsuringQualityReleasesSC'
-        backendAzureRmResourceGroupName: 'RG-SUPPORT'
-        backendAzureRmStorageAccountName: 'sageneralsupport'
-        backendAzureRmContainerName: 'terraform-state'
-        backendAzureRmKey: 'ensuring-quality-releases.tfstate'
-        workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
+        backendServiceArm: 'azurerm-sc'
+        backendAzureRmResourceGroupName: 'tstate'
+        backendAzureRmStorageAccountName: 'tstate6035'
+        backendAzureRmContainerName: 'tstate'
+        backendAzureRmKey: 'terraform.tfstate'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/environments/test'
+
     - task: TerraformTaskV1@0
-      displayName: Terraform Plan
-      inputs:
-        provider: 'azurerm'
-        command: 'plan'
-        workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
-        environmentServiceNameAzureRM: 'EnsuringQualityReleasesSC'
-    - task: TerraformTaskV1@0
-      displayName: Terraform Validate and Apply  
+      displayName: Terraform Apply
       inputs:
         provider: 'azurerm'
         command: 'apply'
-        workingDirectory: '$(System.DefaultWorkingDirectory)/terraform'
-        environmentServiceNameAzureRM: 'EnsuringQualityReleasesSC'
+        commandOptions: |
+          -auto-approve 
+        workingDirectory: '$(System.DefaultWorkingDirectory)/terraform/environments/test'
+        environmentServiceNameAzureRM: 'azurerm-sc'
+
+        ######################## Start Building #########################
 
 - stage: Build
-  displayName: Build
   jobs:
-  - job: Build
+  - job: build_artifacts
+    displayName: Build Artifacts
     pool:
-      name: Hosted Ubuntu 1604
+      vmImage: 'ubuntu-18.04'
     steps:
-    #Needed for Terraform VM deployment
-    # - task: InstallSSHKey@0
-    #   inputs:
-    #     knownHostsEntry: 'KNOWN_HOSTS_STRING'
-    #     sshPublicKey: 'PUBLIC_KEY'
-    #     sshKeySecureFile: 'id_rsa'
     - task: ArchiveFiles@2
-      displayName: 'Archive FakeRestAPI'
+      displayName: Archive FakeRestAPI
       inputs:
         rootFolderOrFile: '$(System.DefaultWorkingDirectory)/fakerestapi'
         includeRootFolder: false
         archiveType: 'zip'
-        archiveFile: '$(Build.ArtifactStagingDirectory)/$(Build.BuildId)-fakerestapi.zip'
-    - publish: $(Build.ArtifactStagingDirectory)/$(Build.BuildId)-fakerestapi.zip
-      displayName: 'Upload Package'
-      artifact: drop-fakerestapi
+        archiveFile: '$(Build.ArtifactStagingDirectory)/fakerestapi-$(Build.BuildId).zip'
+        verbose: true 
+
+    - task: PublishPipelineArtifact@1
+      displayName: Publish FakeRestAPI artifact
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/fakerestapi-$(Build.BuildId).zip'
+        artifactName: 'drop-fakerestapi'
+  
     - task: ArchiveFiles@2
-      displayName: 'Archive files'
+      displayName: Archive Selenium
       inputs:
         rootFolderOrFile: '$(System.DefaultWorkingDirectory)/automatedtesting/selenium'
         includeRootFolder: false
-        archiveType: zip
-        archiveFile: $(Build.ArtifactStagingDirectory)/selenium-tests.zip
-        replaceExistingArchive: true
-    - upload: $(Build.ArtifactStagingDirectory)/selenium-tests.zip
-      artifact: selenium
+        archiveType: 'zip'
+        archiveFile: '$(Build.ArtifactStagingDirectory)/selenium-$(Build.BuildId).zip'
+        verbose: true
+  
+    - task: PublishPipelineArtifact@1
+      displayName: Publish Selenium artifact
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/selenium-$(Build.BuildId).zip'
+        artifactName: 'drop-selenium'
 
-- stage: WebAppDeployment
-  displayName: Web App Deployment
+    ############### Starting Deployments #################################
+
+- stage: Deployment
   jobs:
-  - deployment: FakeRestAPI
+  - deployment: deployment_fakerestapi
+    displayName: Deploy FakeRestAPI
     pool:
-      vmImage: 'Ubuntu-16.04'
-    environment: 'WAP-TEST'
+      vmImage: 'ubuntu-18.04'
+    environment: 'TEST'
     strategy:
       runOnce:
         deploy:
           steps:
           - task: AzureWebApp@1
-            displayName: 'Deploy Azure Web App'
+            displayName: Deploy Azure WebApp
             inputs:
-              azureSubscription: 'EnsuringQualityReleasesSC'
-              appType: 'webApp'
-              appName: 'WAS-EQR'
-              package: '$(Pipeline.Workspace)/drop-fakerestapi/$(Build.BuildId)-fakerestapi.zip'
-              deploymentMethod: 'auto'
-  - deployment: VMDeploy
-    displayName: VM Deploy
+              azureSubscription: 'azurerm-sc'
+              appName: 'sunudev-webapi'
+              appType: webApp
+              package: $(Pipeline.Workspace)/drop-fakerestapi/fakerestapi-$(Build.BuildId).zip
+              deploymentMethod: zipDeploy
+
+  - deployment: deployment_vm
+    displayName: Deploy Virtual Machine
     environment:
-      name:  'VM-TEST'
+      name: 'TEST'
       resourceType: VirtualMachine
     strategy:
       runOnce:
         deploy:
           steps:
-          - task: Bash@3
-            displayName: 'Install Dependencies'
-            inputs:
-              targetType: 'inline'
-              script: |
-                #! /bin/bash
-                
-                sudo apt-get upgrade -y
-                sudo apt-get install python3-pip -y
-                sudo apt-get install unzip -y
-                sudo apt-get install -y chromium-browser
-                pip3 install selenium
-                
-                # download chrome driver
-                FILE=chromedriver_linux64.zip
-                if [ -f "$FILE" ]; then
-                  echo "$FILE exists."
-                else
-                  wget https://chromedriver.storage.googleapis.com/2.41/chromedriver_linux64.zip
-                fi
-                # install chrome driver
-                unzip chromedriver_linux64.zip
-                sudo mv chromedriver /usr/bin/chromedriver
-                sudo chown root:root /usr/bin/chromedriver
-                sudo chmod +x /usr/bin/chromedriver
-                chromium-browser -version
-                chromedriver --version
-                # agent log analytics
-                wget https://raw.githubusercontent.com/Microsoft/OMS-Agent-for-Linux/master/installer/scripts/onboard_agent.sh && sh onboard_agent.sh -w dbf2bd83-6d47-436b-a499-a2b566def8fe -s MuSR8Ti5MMi0E+9+1NM4NxCxFqJcfLzuGD0EtGhjXo3Vhy/THcSdCf1WyQnkXafD+6DiFjiOAEfJiQh6EbZVeg== -d opinsights.azure.com
+          - bash: |
+              pwd
+              hostname
+              uname -a
+              cat /etc/*-release
+              sudo apt-get install software-properties-common -y
+              sudo apt-add-repository universe -y
+              sudo apt-get update -y
+              sudo apt-get install python3-pip -y
+              sudo apt-get install unzip -y
+              sudo apt-get install -y chromium-browser
+              sudo apt-get install -y chromium-chromedriver
+              python3 -m pip install --upgrade pip
+              pip3 install selenium
+              python3 -V
+              pip3 -V
+              /usr/bin/chromium-browser --version
+              /usr/bin/chromedriver --version
+              python3 -c "import selenium; print('Selenium Version:', selenium.__version__)"
+              # Install Log Analytics agent on Linux computers (only need to run once)
+              # wget https://raw.githubusercontent.com/Microsoft/OMS-Agent-for-Linux/master/installer/scripts/onboard_agent.sh
+              # sh onboard_agent.sh -w ${AZURE_LOG_ANALYTICS_ID} -s ${AZURE_LOG_ANALYTICS_PRIMARY_KEY}
+              # sudo /opt/microsoft/omsagent/bin/service_control restart ${AZURE_LOG_ANALYTICS_ID}
+            env:  # To use secret variables in a script, we must explicitly map them as environment variables.
+              AZURE_LOG_ANALYTICS_ID: $(AZURE_LOG_ANALYTICS_ID)
+              AZURE_LOG_ANALYTICS_PRIMARY_KEY: $(AZURE_LOG_ANALYTICS_PRIMARY_KEY)
+            displayName: Configure selenium
 
-          - download: current
-            displayName: 'Download Selenium'
-            artifact: selenium
-          - task: Bash@3
-            displayName: UI Tests
-            inputs:
-              targetType: 'inline'
-              script: |
-                unzip -o $(Pipeline.Workspace)/selenium/selenium-tests.zip -d .
-                sudo mkdir /var/logs
-                python3 uitests.py > ui-logs.log
-                sudo mv ui-logs.log /var/logs
-
-- stage: UITests
-  displayName: UI Tests
-  jobs:
-  - deployment: VMRunUITests
-    displayName: Run UI Tests
-    environment:
-      name:  'VM-TEST'
-      resourceType: VirtualMachine
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-          - download: current
-            displayName: 'Download Selenium'
-            artifact: selenium
-          - task: Bash@3
-            displayName: UI Tests
-            inputs:
-              targetType: 'inline'
-              script: |
-                unzip -o $(Pipeline.Workspace)/selenium/selenium-tests.zip -d .
-                sudo mkdir /var/logs
-                python3 uitests.py > ui-logs.log
-                cat ui-logs.log
-                sudo mv ui-logs.log /var/logs
-
-- stage: IntegrationTests
-  displayName: Integration Tests
-  jobs:
-  - job: PostmanTests
-    displayName: PostmanTests
-    steps: 
-    - task: NodeTool@0
-      displayName: Install Node v12.X
-      inputs:
-        versionSpec: '12.x'
-    - task: CmdLine@2
-      displayName: Install Newman
-      inputs:
-        script: 'npm install newman'
-        workingDirectory: '$(System.DefaultWorkingDirectory)'
-    - task: CmdLine@2
-      displayName: Run Regression Tests
-      inputs:
-        script: 'newman run automatedtesting/postman/RegressionTestSuite.json -e automatedtesting/postman/RegressionTestSuite.Environment.json --delay-request 5000 --bail newman -x --reporters cli,junit --reporter-junit-export Results/RegressionTests.xml'
-        workingDirectory: '$(System.DefaultWorkingDirectory)'
-      continueOnError: true
-    - task: CmdLine@2
-      displayName: Run Data Validation Tests
-      inputs:
-        script: 'newman run automatedtesting/postman/DataValidationTestSuite.json -e automatedtesting/postman/DataValidationTestSuite.Environment.json --delay-request 5000 --bail newman -x --reporters cli,junit --reporter-junit-export Results/DataValidationTests.xml'
-        workingDirectory: '$(System.DefaultWorkingDirectory)'
-      continueOnError: true
-    - task: CmdLine@2
-      inputs:
-        script: 'ls'
-        workingDirectory: '$(System.DefaultWorkingDirectory)'
-    - task: PublishTestResults@2
-      displayName: Publish Test Reports
-      condition: always()
-      inputs:
-        testResultsFormat: 'JUnit'
-        testResultsFiles: '$(System.DefaultWorkingDirectory)/Results/*.xml'
-
-- stage: JMeterTests
-  displayName: JMeter Tests
-  jobs:
-  - job: JMeterTests
-    displayName: JMeterTests
-    steps: 
-    - task: JMeterInstaller@0
-      inputs:
-        jmeterVersion: '5.2.1'
-    - task: Bash@3
-      displayName: EnduranceTest
-      inputs:
-        targetType: 'inline'
-        script: 'jmeter -n -t automatedtesting/jmeter/EnduranceTestSuite.jmx -Jresdir=automatedtesting/jmeter/endurancepages.csv -l automatedtesting/jmeter/report/enduranceresults.jtl -e -o automatedtesting/jmeter/endurancereport'
-    - task: Bash@3
-      displayName: StressTest
-      inputs:
-        targetType: 'inline'
-        script: 'jmeter -n -t automatedtesting/jmeter/StressTestSuite.jmx -Jresdir=automatedtesting/jmeter/stresspages.csv -l automatedtesting/jmeter/report/stressresults.jtl -e -o automatedtesting/jmeter/stressreport'
-    - task: PublishBuildArtifacts@1
-      inputs:
-        PathtoPublish: 'automatedtesting/jmeter'
-        ArtifactName: 'jmeter'
-        publishLocation: 'Container'
+################################ Starting Testing ###########################################################
