@@ -22,11 +22,11 @@ stages:
         targetType: 'inline'
         script: |
           ls /home/vsts/work/_temp/
-    - task: TerraformInstaller
+    - task: TerraformInstaller@0
       displayName: Install Terraform
       inputs:
         terraformVersion: '0.14.3'
-    - task: TerraformTaskV1
+    - task: TerraformTaskV1@0
       displayName: Terraform Init
       inputs:
         provider: 'azurerm'
