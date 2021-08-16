@@ -1,36 +1,3 @@
-
-Skip to content
-Pull requests
-Issues
-Marketplace
-Explore
-@mamadcamzis
-alemag1986 /
-Udacity-Ensuring-Quality-Releases
-
-2
-2
-
-    3
-
-Code
-Issues
-Pull requests
-Actions
-Projects
-Wiki
-Security
-
-    Insights
-
-Udacity-Ensuring-Quality-Releases/.devops/pipelines/azure-pipelines.yaml
-@alemag1986
-alemag1986 Update azure-pipelines.yaml for Azure Pipelines
-Latest commit e81f1e8 on 13 Nov 2020
-History
-1 contributor
-247 lines (237 sloc) 8.89 KB
-
 trigger:
   none
   
